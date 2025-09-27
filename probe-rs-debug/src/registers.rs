@@ -121,6 +121,8 @@ impl DebugRegisters {
                     // The DWARF register ID is only valid for the first 32 registers.
                     dwarf_id: if dwarf_id < 32 {
                         Some(dwarf_id as u16)
+                    } else if core_register.id.0 == 0x341 {
+                        Some(0x1341)
                     } else {
                         None
                     },

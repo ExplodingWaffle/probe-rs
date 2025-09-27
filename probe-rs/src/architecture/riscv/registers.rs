@@ -23,14 +23,14 @@ pub(crate) const FP: CoreRegister = CoreRegister {
     ],
     id: RegisterId(0x1008),
     data_type: RegisterDataType::UnsignedInteger(32),
-    unwind_rule: UnwindRule::Clear,
+    unwind_rule: UnwindRule::Preserve,
 };
 
 pub(crate) const SP: CoreRegister = CoreRegister {
     roles: &[RegisterRole::Core("x2"), RegisterRole::StackPointer],
     id: RegisterId(0x1002),
     data_type: RegisterDataType::UnsignedInteger(32),
-    unwind_rule: UnwindRule::Clear,
+    unwind_rule: UnwindRule::Preserve,
 };
 
 pub(crate) const RA: CoreRegister = CoreRegister {
@@ -38,6 +38,20 @@ pub(crate) const RA: CoreRegister = CoreRegister {
     id: RegisterId(0x1001),
     data_type: RegisterDataType::UnsignedInteger(32),
     unwind_rule: UnwindRule::Clear,
+};
+
+pub(crate) const MEPC: CoreRegister = CoreRegister {
+    roles: &[RegisterRole::Core("mepc"), RegisterRole::Other("mepc")],
+    id: RegisterId(0x341),
+    data_type: RegisterDataType::UnsignedInteger(32),
+    unwind_rule: UnwindRule::Preserve,
+};
+
+pub(crate) const MCAUSE: CoreRegister = CoreRegister {
+    roles: &[RegisterRole::Core("mcause"), RegisterRole::Other("mcause")],
+    id: RegisterId(0x342),
+    data_type: RegisterDataType::UnsignedInteger(32),
+    unwind_rule: UnwindRule::Preserve,
 };
 
 // S0 and S1 need to be referenceable as constants in other parts of the architecture specific code.
@@ -240,5 +254,7 @@ static RISCV_REGISTERS_SET: &[CoreRegister] = &[
         unwind_rule: UnwindRule::Clear,
     },
     PC,
+    MEPC,
+    MCAUSE,
     // TODO: Add FPU registers
 ];

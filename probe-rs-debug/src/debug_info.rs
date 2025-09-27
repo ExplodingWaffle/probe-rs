@@ -678,6 +678,13 @@ impl DebugInfo {
                 }
             };
 
+            // pre unwind
+            println!("pre");
+            // print LR SP and FP
+            println!("LR: {:?}", unwind_registers.get_return_address());
+            println!("SP: {:?}", unwind_registers.get_stack_pointer());
+            println!("FP: {:?}", unwind_registers.get_frame_pointer()); //? fine
+
             // PART 2-b: Unwind registers for the "previous/calling" frame.
             for debug_register in unwind_registers.0.iter_mut() {
                 // The program counter is handled later
@@ -708,6 +715,13 @@ impl DebugInfo {
                     }
                 };
             }
+
+            // post unwind
+            println!("post");
+            // print LR SP and FP
+            println!("LR: {:?}", unwind_registers.get_return_address());
+            println!("SP: {:?}", unwind_registers.get_stack_pointer());
+            println!("FP: {:?}", unwind_registers.get_frame_pointer()); //? fine
 
             // PART 3: Check if we entered the current frame from an exception handler.
             // - If we are at an exception handler frame:
@@ -788,6 +802,8 @@ impl DebugInfo {
                     &mut register_rule_string,
                 )
             });
+
+            println!("pc: {:?}", program_counter.value);
 
             tracing::trace!(
                 "UNWIND - {:>10}: Caller: {}\tCallee: {}\tRule: {}",
@@ -1042,6 +1058,14 @@ pub fn determine_cfa<R: gimli::ReaderOffset>(
         unimplemented!()
     };
 
+    println!("CFA rule: {:?}", unwind_info.cfa());
+
+    // print LR SP and FP
+
+    println!("LR: {:?}", unwind_registers.get_return_address());
+    println!("SP: {:?}", unwind_registers.get_stack_pointer());
+    println!("FP: {:?}", unwind_registers.get_frame_pointer()); //? fine
+
     let reg_val = unwind_registers
         .get_register_by_dwarf_id(register.0)
         .and_then(|register| register.value);
@@ -1153,32 +1177,43 @@ pub fn unwind_register(
     )
 }
 
-fn unwind_register_using_rule(
+pub(crate) fn unwind_register_using_rule(
     debug_register: &probe_rs::CoreRegister,
     callee_frame_registers: &DebugRegisters,
     unwind_cfa: Option<u64>,
     memory: &mut dyn MemoryInterface,
-    register_rule: gimli::RegisterRule<usize>,
+    mut register_rule: gimli::RegisterRule<usize>,
 ) -> Result<Option<RegisterValue>, probe_rs::Error> {
     use gimli::read::RegisterRule;
 
     let mut register_rule_string = format!("{register_rule:?}");
+
+    println!("reg: {}", debug_register);
+    println!(
+        "value: {:?}",
+        callee_frame_registers
+            .get_register(debug_register.id)
+            .and_then(|reg| reg.value)
+    );
+    println!("rule: {}", register_rule_string);
+    println!("cfa: {:?}", unwind_cfa);
 
     let new_value = match register_rule {
         RegisterRule::Undefined => {
             // In many cases, the DWARF has `Undefined` rules for variables like frame pointer, program counter, etc.,
             // so we hard-code some rules here to make sure unwinding can continue. If there is a valid rule, it will bypass these hardcoded ones.
             match &debug_register {
-                fp if fp.register_has_role(RegisterRole::FramePointer) => {
-                    register_rule_string = "FP=CFA (dwarf Undefined)".to_string();
-                    unwind_cfa.map(|unwind_cfa| {
-                        if fp.data_type == RegisterDataType::UnsignedInteger(32) {
-                            RegisterValue::U32(unwind_cfa as u32 & !0b11)
-                        } else {
-                            RegisterValue::U64(unwind_cfa & !0b11)
-                        }
-                    })
-                }
+                // fp if fp.register_has_role(RegisterRole::FramePointer) => {
+                //     // fp is being set to cfa: shouldn't it be the other way??
+                //     register_rule_string = "FP=CFA (dwarf Undefined)".to_string();
+                //     unwind_cfa.map(|unwind_cfa| {
+                //         if fp.data_type == RegisterDataType::UnsignedInteger(32) {
+                //             RegisterValue::U32(unwind_cfa as u32 & !0b11)
+                //         } else {
+                //             RegisterValue::U64(unwind_cfa & !0b11)
+                //         }
+                //     })
+                // }
                 sp if sp.register_has_role(RegisterRole::StackPointer) => {
                     // NOTE: [ARMv7-M Architecture Reference Manual](https://developer.arm.com/documentation/ddi0403/ee), Section B.1.4.1: Treat bits [1:0] as `Should be Zero or Preserved`
                     // - Applying this logic to RISC-V has no adverse effects, since all incoming addresses are already 32-bit aligned.
@@ -1276,6 +1311,9 @@ fn unwind_register_using_rule(
             let result = match address_size {
                 4 => {
                     let mut buff = [0u8; 4];
+                    println!(
+                        "Reading register {debug_register} from address {previous_frame_register_address:#010x}"
+                    );
                     memory
                         .read(previous_frame_register_address, &mut buff)
                         .map(|_| RegisterValue::U32(u32::from_le_bytes(buff)))
@@ -1293,6 +1331,8 @@ fn unwind_register_using_rule(
                 }
             };
 
+            println!("result: {:?}", result);
+
             match result {
                 Ok(register_value) => Some(register_value),
                 Err(error) => {
@@ -1309,6 +1349,70 @@ fn unwind_register_using_rule(
                         4,
                         error
                     )));
+                }
+            }
+        }
+        RegisterRule::Register(source_register) => {
+            // "The previous value of this register is the same as the current value of register r"
+
+            match &debug_register {
+                // lr if lr.register_has_role(RegisterRole::ReturnAddress) => {
+                //     let Ok(current_pc) = callee_frame_registers
+                //         .get_register_value_by_role(&RegisterRole::ProgramCounter)
+                //     else {
+                //         return Err(
+                //             probe_rs::Error::Other(
+                //                 "UNWIND: Tried to unwind return address value where current program counter is unknown.".to_string()
+                //             )
+                //         );
+                //     };
+                //     let Some(current_lr) = callee_frame_registers
+                //         .get_register_by_role(&RegisterRole::ReturnAddress)
+                //         .ok()
+                //         .and_then(|lr| lr.value)
+                //     else {
+                //         return Err(
+                //             probe_rs::Error::Other(
+                //                 "UNWIND: Tried to unwind return address value where current return address is unknown.".to_string()
+                //             )
+                //         );
+                //     };
+
+                //     let current_lr_value: u64 = current_lr.try_into()?;
+
+                //     if current_pc == current_lr_value & !0b1 {
+                //         // If the previous PC is the same as the half-word aligned current LR,
+                //         // we have no way of inferring the previous frames LR until we have the PC.
+                //         register_rule_string = "LR=Undefined (dwarf Undefined)".to_string();
+                //         println!("here");
+                //         None
+                //     } else {
+                //         // We can attempt to continue unwinding with the current LR value, e.g. inlined code.
+                //         register_rule_string = format!("Register {register_rule:?}");
+
+                //         println!("here2");
+                //         // Some(current_lr)
+                //         callee_frame_registers
+                //             .get_register_by_dwarf_id(source_register.0)
+                //             .and_then(|reg| reg.value)
+                //     }
+
+                //     // if current_pc == current_lr_value & !0b1 {
+                //     //     // If the previous PC is the same as the half-word aligned current LR,
+                //     //     // we have no way of inferring the previous frames LR until we have the PC.
+                //     //     register_rule_string = "LR=Undefined (dwarf Undefined)".to_string();
+                //     //     None
+                //     // } else {
+                //     //     // We can attempt to continue unwinding with the current LR value, e.g. inlined code.
+                //     //     register_rule_string = "LR=Current LR (dwarf Undefined)".to_string();
+                //     //     Some(current_lr)
+                //     // }
+                // }
+                _ => {
+                    register_rule_string = format!("Register {register_rule:?}");
+                    callee_frame_registers
+                        .get_register_by_dwarf_id(source_register.0)
+                        .and_then(|reg| reg.value)
                 }
             }
         }
@@ -1330,7 +1434,7 @@ fn unwind_register_using_rule(
 }
 
 /// Helper function to determine the program counter value for the previous frame.
-fn unwind_program_counter_register(
+pub(crate) fn unwind_program_counter_register(
     return_address: RegisterValue,
     current_pc: u64,
     instruction_set: Option<InstructionSet>,
